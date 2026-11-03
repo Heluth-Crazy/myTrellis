@@ -8,15 +8,15 @@ upstream Trellis (0.3 to 0.7) move to it with one command, without losing specs,
 
 ## Acceptance criteria
 
-- [ ] `trellis init` in an empty git repo writes only: the managed block in AGENTS.md and/or CLAUDE.md,
+- [x] `trellis init` in an empty git repo writes only: the managed block in AGENTS.md and/or CLAUDE.md,
       4 skills in `.agents/skills/` and/or `.claude/skills/`, `.trellis/spec/index.md`, `.trellis/tasks/`,
       `.trellis/manifest.json`. No hooks, no Python, no settings files.
-- [ ] Each of the five CLIs, run headless in a freshly initialized repo, sees the block and the four
+- [x] Each of the five CLIs, run headless in a freshly initialized repo, sees the block and the four
       `trellis-*` skills (Pi with project trust).
-- [ ] `trellis update` refreshes unedited managed files and blocks, keeps edited ones and reports them.
-- [ ] `trellis uninstall` removes managed files and blocks and keeps `spec/` and `tasks/` unless `--purge`.
-- [ ] `trellis task new|list|archive` work on Windows and POSIX paths.
-- [ ] `trellis migrate` on copies of all nine local projects that use upstream Trellis:
+- [x] `trellis update` refreshes unedited managed files and blocks, keeps edited ones and reports them.
+- [x] `trellis uninstall` removes managed files and blocks and keeps `spec/` and `tasks/` unless `--purge`.
+- [x] `trellis task new|list|archive` work on Windows and POSIX paths.
+- [x] `trellis migrate` on copies of all nine local projects that use upstream Trellis:
       - removes every upstream hook, agent, command, skill, extension, plugin and script, for all 23 upstream
         platforms, including Cursor and others that Lite doesn't support;
       - removes only the Trellis entries from settings.json, hooks.json, config.toml, package.json and
@@ -26,10 +26,10 @@ upstream Trellis (0.3 to 0.7) move to it with one command, without losing specs,
       - backs up everything it removes or changes outside the project, and `trellis migrate --restore` puts
         the project back byte for byte;
       - a second run reports nothing to do.
-- [ ] After migration, no file in the project references `.trellis/scripts/` or a removed hook.
-- [ ] The test suite passes on Windows (`npm test`) and covers init, update, uninstall, task and migrate
+- [x] After migration, no file in the project references `.trellis/scripts/` or a removed hook.
+- [x] The test suite passes on Windows (`npm test`) and covers init, update, uninstall, task and migrate
       against fixtures from several upstream versions.
-- [ ] A short README explains install, the five platforms, the commands and migration.
+- [x] A short README explains install, the five platforms, the commands and migration.
 
 ## Out of scope
 
