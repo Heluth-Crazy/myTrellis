@@ -7,7 +7,11 @@
 - `--restore` validates every hash first and refuses to overwrite a file edited after the migration.
 - Never touched: `.git`, `.trellis/spec`, `.trellis/tasks`, `.trellis/workspace`. The one exception is a
   task's `implement.jsonl`/`check.jsonl` whose every line is the upstream `_example` seed.
-- Linked folders (symlinks, junctions) are refused: migrate the target project instead.
+- Top-level linked folders stay shared: migrate skips their contents and leaves the links alone. A linked
+  `.trellis` must have a Lite manifest; migrate its target first. No local manifest is written through it.
+  Nested links keep the existing safety checks.
+- With a linked `.trellis`, update refreshes existing local blocks only; init and uninstall must run in
+  the target project. Task commands follow the link so both projects share tasks.
 - `--dry-run` prints the same plan execution would apply; a second migrate finds nothing to do.
 
 ## Recognizing upstream files

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, wr
 import path from 'node:path';
 import { blockContent, blockHash, blockRange, putBlock, stripBlock } from './blocks.js';
 import { fileHash, platforms, readManifest, type Manifest, type Platform } from './manifest.js';
-import { projectPath } from './project.js';
+import { linkedFolder, projectPath, requireLocalTrellis } from './project.js';
 import { template, version } from './templates.js';
 
 interface Options { force?: boolean; dryRun?: boolean }
@@ -114,6 +114,7 @@ function sync(root: string, selected: Platform[], previous: Manifest | undefined
 }
 
 export function init(root: string, requested: Platform[], force = false): string[] {
+  requireLocalTrellis(root);
   const previous = readManifest(root);
   if (!previous && ['.trellis/.version', '.trellis/scripts', '.trellis/workflow.md'].some(p => existsSync(projectPath(root, p)))) {
     throw new Error('Upstream Trellis detected; run trellis migrate');
@@ -131,12 +132,28 @@ export function init(root: string, requested: Platform[], force = false): string
 }
 
 export function update(root: string, options: Options = {}): string[] {
+  const target = linkedFolder(root, '.trellis');
+  if (target) {
+    const operations: Operation[] = [];
+    const messages = [`Files and manifest belong to the target project: ${path.dirname(target)}`];
+    for (const relative of ['AGENTS.md', 'CLAUDE.md']) {
+      const text = read(root, relative);
+      if (!blockRange(text)) continue;
+      const content = putBlock(text, blockContent(template('block.md')));
+      if (content === text) continue;
+      operations.push({ relative, content });
+      messages.push(`${options.dryRun ? 'Would: ' : ''}Wrote block: ${relative}`);
+    }
+    execute(root, operations, options.dryRun);
+    return messages;
+  }
   const previous = readManifest(root);
   if (!previous) throw new Error('No Lite manifest; run trellis init first');
   return sync(root, previous.platforms, previous, options, false);
 }
 
 export function uninstall(root: string, options: { force?: boolean; purge?: boolean; yes?: boolean } = {}): string[] {
+  requireLocalTrellis(root);
   if (options.purge && !options.yes) throw new Error('--purge requires --yes');
   const previous = readManifest(root);
   if (!previous) throw new Error('No Lite manifest; run trellis init first');

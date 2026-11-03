@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -170,4 +170,65 @@ it('removes an orphan OpenCode lockfile that only locks the upstream plugin', ()
   expect(buildMigrationPlan(root).changes.find(c => c.relative === '.opencode/package-lock.json')).toMatchObject({ group: 'removed' });
   writeFileSync(path.join(root, '.opencode', 'package-lock.json'), lock({ '@opencode-ai/plugin': '1.14.22', 'user-dep': '1.0.0' }));
   expect(buildMigrationPlan(root).changes.some(c => c.relative === '.opencode/package-lock.json')).toBe(false);
+});
+
+it('plans around Lite-owned top-level links without creating a local manifest', () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'lite-linked-plan-'));
+  temporary.push(parent);
+  const shared = path.join(parent, 'shared');
+  const root = path.join(parent, 'project');
+  init(shared, ['codex']);
+  mkdirSync(root, { recursive: true });
+  symlinkSync(path.join(shared, '.trellis'), path.join(root, '.trellis'), 'junction');
+  symlinkSync(path.join(shared, '.agents'), path.join(root, '.agents'), 'junction');
+  writeFileSync(path.join(root, 'AGENTS.md'), '<!-- TRELLIS:START -->\nlegacy\n<!-- TRELLIS:END -->\n');
+
+  const plan = buildMigrationPlan(root);
+  expect(plan.shared).toEqual([
+    { relative: '.trellis', target: path.join(shared, '.trellis') },
+    { relative: '.agents', target: path.join(shared, '.agents') },
+  ]);
+  expect(plan.changes.some(change => change.relative === '.trellis/manifest.json')).toBe(false);
+  expect(plan.changes.some(change => change.relative.startsWith('.agents/'))).toBe(false);
+  expect(migrationReport(plan)).toContain(`shared: .trellis -> ${path.join(shared, '.trellis')}`);
+  expect(migrationReport(plan)).toContain(`shared: .agents -> ${path.join(shared, '.agents')}`);
+  expect(lstatSync(path.join(root, '.trellis')).isSymbolicLink()).toBe(true);
+});
+
+it('refuses a linked .trellis target until that target has a Lite manifest', () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'lite-unmigrated-link-'));
+  temporary.push(parent);
+  const shared = path.join(parent, 'shared');
+  const root = path.join(parent, 'project');
+  mkdirSync(path.join(shared, '.trellis', 'scripts'), { recursive: true });
+  mkdirSync(root, { recursive: true });
+  symlinkSync(path.join(shared, '.trellis'), path.join(root, '.trellis'), 'junction');
+  expect(() => buildMigrationPlan(root)).toThrow(`.trellis links to ${path.join(shared, '.trellis')}; migrate that project first`);
+});
+
+it('skips manifest and inventory paths inside linked platform folders while migrating local upstream files', () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'lite-local-manifest-link-'));
+  temporary.push(parent);
+  const root = path.join(parent, 'project');
+  const claude = path.join(parent, 'shared-claude');
+  const cursor = path.join(parent, 'shared-cursor');
+  init(root, ['claude']);
+  init(claude, ['claude']);
+  mkdirSync(cursor, { recursive: true });
+  rmSync(path.join(root, '.claude'), { recursive: true, force: true });
+  symlinkSync(path.join(claude, '.claude'), path.join(root, '.claude'), 'junction');
+  symlinkSync(cursor, path.join(root, '.cursor'), 'junction');
+  writeFileSync(path.join(root, '.trellis', '.template-hashes.json'), JSON.stringify({
+    '.claude/skills/trellis-plan/SKILL.md': hash(readFileSync(path.join(claude, '.claude', 'skills', 'trellis-plan', 'SKILL.md'))),
+  }));
+  mkdirSync(path.join(root, '.trellis', 'scripts'), { recursive: true });
+  writeFileSync(path.join(root, '.trellis', 'scripts', 'task.py'), 'legacy\n');
+
+  const plan = buildMigrationPlan(root);
+  expect(plan.shared).toContainEqual({ relative: '.claude', target: path.join(claude, '.claude') });
+  expect(plan.shared).toContainEqual({ relative: '.cursor', target: cursor });
+  expect(plan.changes.some(change => change.relative.startsWith('.claude/'))).toBe(false);
+  expect(plan.changes.some(change => change.relative.startsWith('.cursor/'))).toBe(false);
+  expect(plan.changes.find(change => change.relative === '.trellis/scripts/task.py')).toMatchObject({ after: undefined });
+  expect(migrationReport(plan)).toContain(`shared: .cursor -> ${cursor}`);
 });

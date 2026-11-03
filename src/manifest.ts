@@ -21,7 +21,7 @@ export function fileHash(bytes: string | Buffer): string {
   return hash((typeof bytes === 'string' ? bytes : bytes.toString('utf8')).replace(/\r\n/g, '\n'));
 }
 
-export function readManifest(root: string): Manifest | undefined {
+export function readManifest(root: string, shared: string[] = []): Manifest | undefined {
   const file = projectPath(root, '.trellis/manifest.json');
   if (!existsSync(file)) return undefined;
   const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
@@ -33,7 +33,8 @@ export function readManifest(root: string): Manifest | undefined {
   for (const entries of [m.files, m.blocks]) {
     if (typeof entries !== 'object' || Array.isArray(entries)) throw new Error('Invalid Lite manifest');
     for (const [relative, digest] of Object.entries(entries)) {
-      projectPath(root, relative);
+      if (!relative || relative.includes('\0') || relative.includes('\\') || relative.includes(':') || relative.split('/').some(p => !p || p === '.' || p === '..')) throw new Error('Invalid manifest path');
+      if (!shared.some(folder => relative.startsWith(`${folder}/`))) projectPath(root, relative);
       if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid manifest hash');
     }
   }

@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { projectPath } from './project.js';
+import { linkedFolder, projectPath } from './project.js';
 import { template } from './templates.js';
 
 const TASKS_DIR = '.trellis/tasks';
@@ -28,8 +28,15 @@ function localDate(date = new Date()): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
+function taskPath(root: string, relative: string): string {
+  const target = linkedFolder(root, '.trellis');
+  if (!target) return projectPath(root, relative);
+  projectPath(target, relative.slice('.trellis/'.length));
+  return path.join(root, relative);
+}
+
 function taskDirectory(root: string): string {
-  const directory = projectPath(root, TASKS_DIR);
+  const directory = taskPath(root, TASKS_DIR);
   if (existsSync(directory) && !lstatSync(directory).isDirectory()) {
     throw new Error(`${TASKS_DIR} is not a directory`);
   }
@@ -55,7 +62,7 @@ function activeTasks(root: string): TaskEntry[] {
 }
 
 function archivedTasks(root: string): TaskEntry[] {
-  const directory = projectPath(root, `${TASKS_DIR}/archive`);
+  const directory = taskPath(root, `${TASKS_DIR}/archive`);
   if (!existsSync(directory)) return [];
   const result: TaskEntry[] = [];
   for (const month of readdirSync(directory, { withFileTypes: true })) {
@@ -121,7 +128,7 @@ export function taskNew(root: string, slug: string, title?: string): string {
   ensureTaskDirectory(root);
   const name = `${localDate().slice(5)}-${slug}`;
   const relative = `${TASKS_DIR}/${name}`;
-  const directory = projectPath(root, relative);
+  const directory = taskPath(root, relative);
   if (existsSync(directory)) throw new Error(`Task already exists: ${name}`);
 
   mkdirSync(directory);
@@ -155,7 +162,7 @@ export function taskArchive(root: string, name: string): string[] {
   if (candidates.length > 1) throw new Error(`Task name is ambiguous: ${name}`);
   const task = candidates[0]!;
   const archiveMonth = localDate().slice(0, 7);
-  const archive = projectPath(root, `${TASKS_DIR}/archive/${archiveMonth}`);
+  const archive = taskPath(root, `${TASKS_DIR}/archive/${archiveMonth}`);
   mkdirSync(archive, { recursive: true });
   const destination = path.join(archive, task.name);
   if (existsSync(destination)) throw new Error(`Archived task already exists: ${task.name}`);

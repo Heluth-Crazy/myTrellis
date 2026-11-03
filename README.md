@@ -72,8 +72,9 @@ it installs Lite for the platforms the project uses.
   `~/.trellis-lite/backups/<project>-<id>/<time>/` or under `--backup-dir`.
 - **Undo:** `trellis migrate --restore <backup>` puts every file back byte for byte. It refuses to overwrite
   files you changed after migrating.
-- **Linked folders:** if `.trellis` or an agent folder is a symlink or junction into another project, migrate
-  that project instead.
+- **Linked folders:** top-level symlinks and junctions stay shared and untouched. If `.trellis` is linked,
+  migrate its target first. Tasks use the shared folder; `update` refreshes local blocks only. Run `init`
+  and `uninstall` in the target project.
 
 Running migrate again is safe: it reports "Nothing to migrate."
 

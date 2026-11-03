@@ -36,3 +36,28 @@
 - `trellis migrate` on this repository's own upstream install, then `--restore` (git status clean), then
   migrate again. Found and fixed: version-only Cursor hooks file, blank lines left in `.gitattributes`,
   orphan OpenCode lockfile.
+
+## Linked folders
+
+- Final `npm run build` passed. `npm test`: 96 passed, 1 skipped (external fixture cache not selected).
+  With `TL_FIXTURES=D:/project/myTrellis-scratch/cache`, `npm test`: 111 passed, 1 skipped; all 7 test
+  files passed, covering 15 upstream versions. `git diff --check` and LF checks passed.
+- Reviewed the brief, README, migration/platform specs, and full change against the seven behavior criteria.
+- Regression tests cover shared `.trellis` and agent folders, a target without a Lite manifest, nested-link
+  refusal, skipped shared destinations and manifest writes, idempotence, and exact restore. CLI tests cover
+  block-only update (including dry-run), init/uninstall refusal, and shared task new/list/archive.
+- Copied ThreadTerm-vscode's own entries (excluding `node_modules`, `dist`, `.trellis`, `.agents`) to
+  `D:/project/myTrellis-scratch/linked/vscode/`; copied ThreadTerm's `.trellis` and `.agents` to the sibling
+  `ThreadTerm/` and created junctions to those copies. Neither real project was modified.
+- Copy migration succeeded; second migration reported "Nothing to migrate." Restore recovered all 145
+  changed files byte for byte. SHA-256 snapshots also confirmed the complete file/directory list and both
+  junction targets were identical, and the shared copy stayed unchanged through migration and restore.
+  Backup: `D:/project/myTrellis-scratch/linked/backups/2026-11-03T23-42-09-969Z-46868/`.
+- Read-only `node D:/project/myTrellis/bin/trellis.js migrate --dry-run` in real ThreadTerm-vscode succeeded:
+  platforms kimi/opencode; shared `.trellis` and `.agents` point into `D:/project/ThreadTerm/ThreadTerm/`;
+  removed 140 (.cursor 42, .grok 48, .kimi-code 6, .opencode 44), scrubbed 2 (.cursor 1, root 1),
+  edited-and-removed 3, kept 0, created 0, leftover references 0. Cursor and Grok are unsupported.
+  The edited files are `.cursor/skills/trellis-meta/references/local-architecture/workspace-memory.md`,
+  `.grok/skills/trellis-channel/references/command-reference.md`, and
+  `.opencode/skills/trellis-meta/references/local-architecture/workspace-memory.md`.
+- Templates unchanged; no global installs or commits. Windows checks only; POSIX CI was not run locally.

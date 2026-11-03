@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -42,4 +42,25 @@ export function projectPath(root: string, relative: string): string {
     }
   }
   return target;
+}
+
+/** Top-level shared folders are handled explicitly by each command. */
+export function linkedFolder(root: string, relative: string): string | undefined {
+  const folder = path.join(root, relative);
+  try {
+    if (!lstatSync(folder).isSymbolicLink()) return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return undefined;
+  }
+  try { return realpathSync(folder); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return path.resolve(root, readlinkSync(folder));
+  }
+}
+
+export function requireLocalTrellis(root: string): void {
+  const target = linkedFolder(root, '.trellis');
+  if (target) throw new Error(`.trellis links to ${target}; run this in ${path.dirname(target)}`);
 }

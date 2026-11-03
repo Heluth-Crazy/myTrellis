@@ -4,14 +4,14 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { blockContent, blockHash, blockRange, putBlock, stripBlock } from './blocks.js';
 import { fileHash, hash, platforms, readManifest, type Manifest, type Platform } from './manifest.js';
-import { projectPath, normalizePath } from './project.js';
+import { projectPath, normalizePath, linkedFolder } from './project.js';
 import { template, version } from './templates.js';
 import { classify, generatedPath, platformFolders, protectedPath, type Catalog } from './legacy/classify.js';
 import { scrubStructured } from './legacy/scrubbers.js';
 
 export interface MigrationOptions { dryRun?: boolean; yes?: boolean; backupDir?: string; keepEdited?: boolean }
 interface Change { relative: string; before?: string; after?: string; group: 'removed' | 'scrubbed' | 'edited-and-removed' | 'created'; mode?: number }
-export interface MigrationPlan { root: string; changes: Change[]; directories: string[]; platforms: Platform[]; unsupported: string[]; kept: string[]; leftovers: string[] }
+export interface MigrationPlan { root: string; changes: Change[]; directories: string[]; platforms: Platform[]; unsupported: string[]; kept: string[]; leftovers: string[]; shared: { relative: string; target: string }[] }
 interface StoredChange { relative: string; beforeHash?: string; afterHash?: string; group: Change['group']; mode?: number }
 interface BackupPlan { format: 2; root: string; changes: StoredChange[]; directories: string[]; createdDirectories: string[]; kept: string[]; unsupported: string[]; leftovers: string[] }
 const skills = ['trellis-plan', 'trellis-check', 'trellis-handoff', 'trellis-spec'];
@@ -56,7 +56,8 @@ function walk(root: string, relative: string, files: Map<string, Buffer>, direct
     // after the package scrubber has established that the whole package goes.
     if (child === '.opencode/node_modules') continue;
     if (protectedPath(child) && !(taskSeeds && /^\.trellis\/tasks(?:\/|$)/.test(child))) continue;
-    // Opaque user links are preserved. A classified link cannot be safely migrated.
+    // Top-level links are shared (see buildMigrationPlan). Nested user links are preserved;
+    // a nested link where upstream wrote files cannot be safely migrated.
     if (entry.isSymbolicLink()) {
       links.push(child);
       if (classify(child, '', {}, { versions: [], paths: {} }).source !== 'unknown') safe(root, child);
@@ -65,7 +66,7 @@ function walk(root: string, relative: string, files: Map<string, Buffer>, direct
     walk(root, child, files, directories, taskSeeds, links);
   }
 }
-function inventory(root: string): Record<string, string> {
+function inventory(root: string, shared: string[] = []): Record<string, string> {
   const file = safe(root, '.trellis/.template-hashes.json');
   if (!existsSync(file)) return {};
   const value: unknown = JSON.parse(readFileSync(file, 'utf8'));
@@ -77,6 +78,7 @@ function inventory(root: string): Record<string, string> {
   for (const [key, digest] of Object.entries(entries)) {
     if (key === '__version') continue;
     const relative = key.replace(/\\/g, '/');
+    if (shared.some(folder => relative === folder || relative.startsWith(`${folder}/`))) continue;
     safe(root, relative);
     if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/i.test(digest)) throw new Error(`Invalid upstream hash: ${key}`);
     result[relative] = digest;
@@ -86,24 +88,36 @@ function inventory(root: string): Record<string, string> {
 
 export function buildMigrationPlan(root: string, options: MigrationOptions = {}): MigrationPlan {
   root = realpathSync(root);
-  for (const folder of ['.trellis', ...platformFolders]) safe(root, folder);
-  const previous = readManifest(root);
-  const originals = inventory(root);
+  const shared = ['.trellis', ...platformFolders].flatMap(relative => {
+    const target = linkedFolder(root, relative);
+    return target ? [{ relative, target }] : [];
+  });
+  const isShared = (relative: string): boolean => shared.some(link => relative === link.relative || relative.startsWith(`${link.relative}/`));
+  const sharedTrellis = shared.find(link => link.relative === '.trellis');
+  if (sharedTrellis) {
+    let lite = false;
+    try { lite = JSON.parse(readFileSync(projectPath(sharedTrellis.target, 'manifest.json'), 'utf8')).tool === 'trellis-lite'; }
+    catch { /* An absent or invalid manifest means the target needs migration first. */ }
+    if (!lite) throw new Error(`.trellis links to ${sharedTrellis.target}; migrate that project first`);
+  }
+  for (const folder of ['.trellis', ...platformFolders]) if (!isShared(folder)) safe(root, folder);
+  const previous = sharedTrellis ? undefined : readManifest(root, shared.map(link => link.relative));
+  const originals = sharedTrellis ? {} : inventory(root, shared.map(link => link.relative));
   const catalog = JSON.parse(readFileSync(new URL('./legacy/catalog.json', import.meta.url), 'utf8')) as Catalog;
   const files = new Map<string, Buffer>();
   const directories: string[] = [];
   const links: string[] = [];
-  for (const folder of ['.trellis', ...platformFolders]) walk(root, folder, files, directories, false, links);
+  for (const folder of ['.trellis', ...platformFolders]) if (!isShared(folder)) walk(root, folder, files, directories, false, links);
   // Task content is read only to identify the two disposable upstream seed files.
   const taskFiles = new Map<string, Buffer>();
-  walk(root, '.trellis/tasks', taskFiles, [], true);
+  if (!sharedTrellis) walk(root, '.trellis/tasks', taskFiles, [], true);
   for (const [relative, bytes] of taskFiles) {
     if (!/\/(?:implement|check)\.jsonl$/.test(relative)) continue;
     const lines = bytes.toString().split(/\r?\n/).filter(line => line.trim());
     if (lines.length && lines.every(line => line.includes('_example'))) files.set(relative, bytes);
   }
   for (const relative of new Set(['AGENTS.md', 'CLAUDE.md', ...Object.keys(catalog.paths).filter(p => !p.includes('/')), ...Object.keys(originals)])) {
-    if (protectedPath(relative)) continue;
+    if (protectedPath(relative) || isShared(relative)) continue;
     const file = safe(root, relative);
     if (present(file) && lstatSync(file).isFile()) files.set(relative, readFileSync(file));
   }
@@ -112,7 +126,7 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
   const kept: string[] = [];
   const owned = new Set<string>();
   const litePaths = new Set(Object.keys(previous?.files ?? {}));
-  const upstreamEvidence = Object.keys(originals).length > 0 || ['.trellis/.version', '.trellis/scripts', '.trellis/workflow.md'].some(p => present(safe(root, p)))
+  const upstreamEvidence = Object.keys(originals).length > 0 || ['.trellis/.version', '.trellis/scripts', '.trellis/workflow.md'].some(p => !isShared(p) && present(safe(root, p)))
     || directories.some(p => /^\.trellis\/(?:\.runtime|\.backup-[^/]+)(?:\/|$)/.test(p));
   const put = (relative: string, bytes: Buffer | undefined, group: Change['group']): void => {
     safe(root, relative);
@@ -167,20 +181,20 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
   }
   const packageChange = changes.get('.opencode/package.json');
   if ((packageChange && packageChange.after === undefined) || (!files.has('.opencode/package.json') && pluginOnlyLock(files.get('.opencode/package-lock.json')))) {
-    walk(root, '.opencode/node_modules', files, directories, false, links);
+    if (!isShared('.opencode')) walk(root, '.opencode/node_modules', files, directories, false, links);
     for (const relative of links) if (relative.startsWith('.opencode/node_modules/')) safe(root, relative);
     for (const [relative] of files) {
       if (/^\.opencode\/(?:node_modules\/|(?:package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml)$)/.test(relative)) put(relative, undefined, 'removed');
     }
   }
   const mapping: Record<Platform, string> = { claude: '.claude', codex: '.codex', kimi: '.kimi-code', pi: '.pi', opencode: '.opencode' };
-  const selected = platforms.filter(p => previous?.platforms.includes(p) || present(safe(root, mapping[p])) || [...owned].some(relative => relative.startsWith(`${mapping[p]}/`)));
+  const selected = platforms.filter(p => previous?.platforms.includes(p) || (isShared(mapping[p]) || present(safe(root, mapping[p]))) || [...owned].some(relative => relative.startsWith(`${mapping[p]}/`)));
   if (files.has('CLAUDE.md') && !selected.includes('claude')) selected.push('claude');
   const agentsSignal = Boolean(blockRange(files.get('AGENTS.md')?.toString() ?? '')) || [...files.keys()].some(p => /^\.agents\/skills\/trellis-/.test(p) && !litePaths.has(p));
   if (agentsSignal && !selected.some(p => p !== 'claude')) selected.push('codex');
   const unsupported = [...new Set([...owned].map(p => p.split('/')[0]!).filter(p => platformFolders.includes(p) && p !== '.agents' && !Object.values(mapping).includes(p)))].sort();
-  if (previous && !upstreamEvidence && !changes.size) return { root, changes: [], directories, platforms: previous.platforms, unsupported: [], kept, leftovers: [] };
-  if (!owned.size && !changes.size && !upstreamEvidence) return { root, changes: [], directories, platforms: [], unsupported, kept, leftovers: [] };
+  if (previous && !upstreamEvidence && !changes.size) return { root, changes: [], directories, platforms: previous.platforms, unsupported: [], kept, leftovers: [], shared };
+  if (!owned.size && !changes.size && !upstreamEvidence) return { root, changes: [], directories, platforms: [], unsupported, kept, leftovers: [], shared };
   if (!selected.length) selected.push('codex');
   const selectedPlatforms = platforms.filter(p => selected.includes(p) || previous?.platforms.includes(p));
   const manifest: Manifest = { tool: 'trellis-lite', version, platforms: selectedPlatforms, files: {}, blocks: {} };
@@ -192,7 +206,7 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
   for (const target of targets) {
     for (const skill of skills) {
       const relative = `.${target}/skills/${skill}/SKILL.md`;
-      if (kept.includes(relative)) continue;
+      if (kept.includes(relative) || isShared(relative)) continue;
       const content = template(`skills/${skill}/SKILL.md`);
       // Preserve unrelated files occupying a Lite destination.
       if (files.has(relative) && !owned.has(relative) && !previous?.files[relative]) { kept.push(relative); continue; }
@@ -205,7 +219,7 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
     put(relative, Buffer.from(putBlock(files.get(relative)?.toString() ?? '', content)), 'scrubbed');
     manifest.blocks[relative] = blockHash(content);
   }
-  put('.trellis/manifest.json', Buffer.from(JSON.stringify(manifest, null, 2) + '\n'), 'created');
+  if (!sharedTrellis) put('.trellis/manifest.json', Buffer.from(JSON.stringify(manifest, null, 2) + '\n'), 'created');
   const finalFiles = new Map(files);
   for (const change of changes.values()) {
     if (change.after === undefined) finalFiles.delete(change.relative);
@@ -217,12 +231,13 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
     const text = bytes.toString().replace(/\\/g, '/');
     return /\.trellis\/scripts|\btask\.py\b|\badd_session\.py\b/.test(text) || removedHooks.some(p => text.includes(p));
   }).map(([relative]) => relative).sort();
-  return { root, changes: [...changes.values()].sort((a, b) => a.relative.localeCompare(b.relative)), directories, platforms: selectedPlatforms, unsupported, kept: kept.sort(), leftovers };
+  return { root, changes: [...changes.values()].sort((a, b) => a.relative.localeCompare(b.relative)), directories, platforms: selectedPlatforms, unsupported, kept: kept.sort(), leftovers, shared };
 }
 
 export function migrationReport(plan: MigrationPlan): string[] {
-  if (!plan.changes.length) return ['Nothing to migrate.'];
-  const lines = [`Platforms: ${plan.platforms.join(', ') || '(none supported)'}`];
+  const shared = plan.shared.map(link => `shared: ${link.relative} -> ${link.target}`);
+  if (!plan.changes.length) return ['Nothing to migrate.', ...shared];
+  const lines = [`Platforms: ${plan.platforms.join(', ') || '(none supported)'}`, ...shared];
   for (const group of ['removed', 'scrubbed', 'edited-and-removed', 'kept', 'created'] as const) {
     const entries = group === 'kept' ? plan.kept : plan.changes.filter(c => c.group === group).map(c => c.relative);
     const counts = new Map<string, number>();

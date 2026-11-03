@@ -1,6 +1,6 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, unlinkSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -252,16 +252,58 @@ describe('trellis migrate handwritten fixtures', () => {
     expectSnapshot(root, original);
   });
 
-  it('refuses linked platform folders before mutation', () => {
+  it('migrates own files around linked Lite folders, is idempotent, and restores exact bytes', () => {
+    const shared = project();
+    run(shared, ['init', '--codex']);
+    const root = project();
+    symlinkSync(path.join(shared, '.trellis'), path.join(root, '.trellis'), 'junction');
+    symlinkSync(path.join(shared, '.agents'), path.join(root, '.agents'), 'junction');
+    write(root, 'AGENTS.md', 'Project notes.\n<!-- TRELLIS:START -->\nlegacy\n<!-- TRELLIS:END -->\n');
+    write(root, '.cursor/settings.json', '{"hooks":{"before":"python .trellis/scripts/task.py"}}\n');
+    const original = snapshot(root);
+    const sharedBefore = snapshot(shared);
+    const backup = backupDir();
+
+    const dry = run(root, ['migrate', '--dry-run', '--backup-dir', backup]);
+    expect(dry).toContain(`shared: .trellis -> ${path.join(shared, '.trellis')}`);
+    expect(dry).toContain(`shared: .agents -> ${path.join(shared, '.agents')}`);
+    expectSnapshot(root, original);
+    const applied = run(root, ['migrate', '--yes', '--backup-dir', backup]);
+    const saved = backupFrom(applied);
+    expect(withoutBackup(applied)).toBe(dry);
+    expect(lstatSync(path.join(root, '.trellis')).isSymbolicLink()).toBe(true);
+    expect(lstatSync(path.join(root, '.agents')).isSymbolicLink()).toBe(true);
+    expect(existsSync(path.join(root, '.trellis', 'manifest.json'))).toBe(true);
+    expectSnapshot(shared, sharedBefore);
+    expect(readFileSync(path.join(root, 'AGENTS.md'), 'utf8')).toContain('<!-- TRELLIS:START -->');
+    expect(run(root, ['migrate', '--yes', '--backup-dir', backup])).toMatch(/nothing to migrate/i);
+    run(root, ['migrate', '--restore', saved]);
+    expectSnapshot(root, original);
+    expectSnapshot(shared, sharedBefore);
+  });
+
+  it('refuses nested links where upstream wrote files and an unmigrated linked .trellis before mutation', () => {
     const root = project();
     const outside = project();
     write(root, '.trellis/scripts/task.py', 'legacy');
-    symlinkSync(outside, path.join(root, '.agents'), process.platform === 'win32' ? 'junction' : 'dir');
+    mkdirSync(path.join(root, '.agents', 'skills'), { recursive: true });
+    symlinkSync(outside, path.join(root, '.agents', 'skills', 'trellis-start'), 'junction');
     const before = snapshot(root);
     const output = run(root, ['migrate', '--yes', '--backup-dir', backupDir()], true);
     expect(output).toMatch(/link|junction|target project/i);
-    expect(lstatSync(path.join(root, '.agents')).isSymbolicLink()).toBe(true);
     expectSnapshot(root, before);
+
+    // A nested link of the user's own is preserved.
+    unlinkSync(path.join(root, '.agents', 'skills', 'trellis-start'));
+    symlinkSync(outside, path.join(root, '.agents', 'shared'), 'junction');
+    run(root, ['migrate', '--yes', '--backup-dir', backupDir()]);
+    expect(lstatSync(path.join(root, '.agents', 'shared')).isSymbolicLink()).toBe(true);
+    expect(existsSync(path.join(root, '.trellis', 'scripts'))).toBe(false);
+
+    const linked = project();
+    mkdirSync(path.join(outside, '.trellis'), { recursive: true });
+    symlinkSync(path.join(outside, '.trellis'), path.join(linked, '.trellis'), 'junction');
+    expect(run(linked, ['migrate', '--yes', '--backup-dir', backupDir()], true)).toContain(`.trellis links to ${path.join(outside, '.trellis')}; migrate that project first`);
   });
 
   it('refuses manifest claims that escape the project and a backup inside it', () => {

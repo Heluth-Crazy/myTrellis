@@ -232,6 +232,41 @@ describe('trellis CLI integration', () => {
     expect(existsSync(edited)).toBe(false);
   });
 
+  it('updates only local blocks, refuses install commands, and follows shared task folders', () => {
+    const shared = project();
+    run(shared, ['init', '--codex']);
+    const root = project();
+    symlinkSync(path.join(shared, '.trellis'), path.join(root, '.trellis'), 'junction');
+    symlinkSync(path.join(shared, '.agents'), path.join(root, '.agents'), 'junction');
+    write(root, 'AGENTS.md', 'Local note.\n<!-- TRELLIS:START -->\nold block\n<!-- TRELLIS:END -->\n');
+    write(root, 'CLAUDE.md', 'Claude-specific note.\n<!-- TRELLIS:START -->\nold Claude block\n<!-- TRELLIS:END -->\n');
+    const sharedManifest = readFileSync(path.join(shared, '.trellis', 'manifest.json'));
+    const sharedSkill = readFileSync(path.join(shared, '.agents', 'skills', 'trellis-plan', 'SKILL.md'));
+
+    const dry = run(root, ['update', '--dry-run']);
+    expect(dry).toMatch(/AGENTS\.md/);
+    expect(dry).toMatch(/CLAUDE\.md/);
+    expect(dry).toMatch(/target project|belong to the target/i);
+    expect(readFileSync(path.join(root, 'AGENTS.md'), 'utf8')).toContain('old block');
+    expect(readFileSync(path.join(root, 'CLAUDE.md'), 'utf8')).toContain('old Claude block');
+    run(root, ['update']);
+    expect(readFileSync(path.join(root, 'AGENTS.md'), 'utf8')).not.toContain('old block');
+    expect(readFileSync(path.join(root, 'AGENTS.md'), 'utf8')).toContain('Local note.');
+    expect(readFileSync(path.join(root, 'CLAUDE.md'), 'utf8')).not.toContain('old Claude block');
+    expect(readFileSync(path.join(root, 'CLAUDE.md'), 'utf8')).toContain('Claude-specific note.');
+    expect(readFileSync(path.join(shared, '.trellis', 'manifest.json'))).toEqual(sharedManifest);
+    expect(readFileSync(path.join(shared, '.agents', 'skills', 'trellis-plan', 'SKILL.md'))).toEqual(sharedSkill);
+    const target = path.dirname(path.join(shared, '.trellis'));
+    expect(run(root, ['init', '--codex'], true)).toContain(`.trellis links to ${path.join(shared, '.trellis')}; run this in ${target}`);
+    expect(run(root, ['uninstall'], true)).toContain(`.trellis links to ${path.join(shared, '.trellis')}; run this in ${target}`);
+
+    const name = taskName(run(root, ['task', 'new', 'shared-task']));
+    expect(existsSync(path.join(shared, '.trellis', 'tasks', name, 'prd.md'))).toBe(true);
+    expect(run(root, ['task', 'list'])).toContain(name);
+    run(root, ['task', 'archive', name]);
+    expect(run(root, ['task', 'list', '--all'])).toContain(`${name}  shared task`);
+  });
+
   it('creates tasks and lists heading, legacy title fallback, slug fallback, and large task sizes', () => {
     const root = project();
     const first = taskName(run(root, ['task', 'new', 'first-task', '--title', 'First title']));
