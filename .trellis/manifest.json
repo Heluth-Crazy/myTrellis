@@ -1,0 +1,24 @@
+{
+  "tool": "trellis-lite",
+  "version": "1.0.0-alpha.0",
+  "platforms": [
+    "claude",
+    "codex",
+    "pi",
+    "opencode"
+  ],
+  "files": {
+    ".claude/skills/trellis-plan/SKILL.md": "6c14abc6cfb3ee3a70b124687fde8104d0c01a1b6cf4fd6c4b703bedafe91c0e",
+    ".claude/skills/trellis-check/SKILL.md": "93a2bacf56f2cb11751a7f481b0587b82786eb313eb73e0bae2e328650baabff",
+    ".claude/skills/trellis-handoff/SKILL.md": "56a2e240eb5bbfea46534e8c78be0cd27ea0b9d1098886385096d0f8d37a79e6",
+    ".claude/skills/trellis-spec/SKILL.md": "b70534aa8f6399f54afe3cd2834a84390dd04d4ae08ed3e21bd60e51cb24a0a4",
+    ".agents/skills/trellis-plan/SKILL.md": "6c14abc6cfb3ee3a70b124687fde8104d0c01a1b6cf4fd6c4b703bedafe91c0e",
+    ".agents/skills/trellis-check/SKILL.md": "93a2bacf56f2cb11751a7f481b0587b82786eb313eb73e0bae2e328650baabff",
+    ".agents/skills/trellis-handoff/SKILL.md": "56a2e240eb5bbfea46534e8c78be0cd27ea0b9d1098886385096d0f8d37a79e6",
+    ".agents/skills/trellis-spec/SKILL.md": "b70534aa8f6399f54afe3cd2834a84390dd04d4ae08ed3e21bd60e51cb24a0a4"
+  },
+  "blocks": {
+    "CLAUDE.md": "f20b88adddab9197a8f34fe53f3e77b27ea8af662387a418be2aecdd30373ff9",
+    "AGENTS.md": "f20b88adddab9197a8f34fe53f3e77b27ea8af662387a418be2aecdd30373ff9"
+  }
+}

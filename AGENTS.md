@@ -1,23 +1,24 @@
 <!-- TRELLIS:START -->
-# Trellis Instructions
+# Trellis
 
-These instructions are for AI assistants working in this project.
+Project knowledge lives in `.trellis/`. Nothing is injected; read what the task needs.
 
-This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+- `.trellis/spec/` holds what the code can't tell you: decisions and their reasons, contracts between layers,
+  platform pitfalls. Before changing an area, read the matching `index.md` there. Skip it for trivial edits.
+- `.trellis/tasks/<MM-DD-slug>/` is one folder per piece of work that spans sessions, needs a plan the user
+  should see, or is handed to another agent. `prd.md` holds the goal and acceptance criteria. Add short notes
+  as needed: `findings.md`, `validation.md`, `brief-<name>.md`.
 
-- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
-- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
-- `.trellis/workspace/` — per-developer journals and session traces
-- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+How to work:
 
-If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
-
-If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
-- `.agents/skills/` — reusable Trellis skills
-- `.codex/agents/` — optional custom subagents
-
-Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
-
+- Small, clear requests: just do them. No task folder.
+- Larger or unclear work: write `prd.md` first (skill `trellis-plan`), agree on it, then build.
+- Before saying it's done: check against the acceptance criteria and run the project's checks
+  (skill `trellis-check`).
+- Handing work to another agent, or pausing: write a brief (skill `trellis-handoff`). After a context reset,
+  re-read the task folder before continuing.
+- Learned something the code doesn't show? Record it in the spec (skill `trellis-spec`).
+- Keep task folders small: summaries, not raw logs, dumps or backups.
 <!-- TRELLIS:END -->
 
 <!-- gitnexus:start -->
