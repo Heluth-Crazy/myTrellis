@@ -219,6 +219,7 @@ function scrubCopilotGuidance(content: string): StructuredScrubResult {
 
 function scrubGitattributes(content: string): StructuredScrubResult {
   // Upstream appends this complete stanza to an existing user-owned file.
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
   const stanza = [
     '# Trellis: append-only developer journals should merge cleanly across',
     '# parallel sessions/worktrees — each session only appends a new block, so',
@@ -229,8 +230,16 @@ function scrubGitattributes(content: string): StructuredScrubResult {
     '# picking either side (task state lives in task.json, not index.md). See',
     '# .trellis/spec/cli/backend/directory-structure.md for details.',
     '.trellis/workspace/*/journal-*.md merge=union',
-  ].join(content.includes('\r\n') ? '\r\n' : '\n');
-  const result = content.replace(stanza, '').replace(/^\.trellis\/workspace\/\*\/journal-\*\.md\s+merge=union[^\S\r\n]*(?:\r?\n|$)/gm, '');
+  ].join(eol);
+  const index = content.indexOf(stanza);
+  let result = content;
+  if (index !== -1) {
+    // Drop the blank lines that separated the stanza, keeping one between the remaining neighbours.
+    const before = content.slice(0, index).replace(/(?:\r?\n)+$/, '');
+    const after = content.slice(index + stanza.length).replace(/^(?:\r?\n)+/, '');
+    result = before && after ? `${before}${eol}${eol}${after}` : before ? `${before}${eol}` : after;
+  }
+  result = result.replace(/^\.trellis\/workspace\/\*\/journal-\*\.md\s+merge=union[^\S\r\n]*(?:\r?\n|$)/gm, '');
   return { content: result, fullyEmpty: result.trim() === '' && result !== content };
 }
 

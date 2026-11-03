@@ -101,6 +101,22 @@ describe('legacy structured scrubbers', () => {
     expect(scrubStructured('.gitattributes', '*.txt text eol=lf\n.trellis/workspace/*/journal-*.md merge=union\n', deleted)).toEqual({ content: '*.txt text eol=lf\n', fullyEmpty: false });
     expect(scrubStructured('.gitattributes', '*.txt text eol=lf\n', deleted)).toEqual({ content: '*.txt text eol=lf\n', fullyEmpty: false });
   });
+  it('leaves no stray blank lines where the upstream journal stanza was', () => {
+    const stanza = [
+      '# Trellis: append-only developer journals should merge cleanly across',
+      '# parallel sessions/worktrees — each session only appends a new block, so',
+      '# there is nothing to actually conflict on.',
+      '#',
+      '# Do NOT add a rule for workspace/*/index.md here — it is fully regenerated',
+      '# every session, so a real conflict there is expected and safe to resolve by',
+      '# picking either side (task state lives in task.json, not index.md). See',
+      '# .trellis/spec/cli/backend/directory-structure.md for details.',
+      '.trellis/workspace/*/journal-*.md merge=union',
+    ].join('\n');
+    expect(scrubStructured('.gitattributes', `${stanza}\n\n# user\n* text=auto\n`, deleted)!.content).toBe('# user\n* text=auto\n');
+    expect(scrubStructured('.gitattributes', `* text=auto\n\n${stanza}\n`, deleted)!.content).toBe('* text=auto\n');
+    expect(scrubStructured('.gitattributes', `a\n\n${stanza}\n\nb\n`, deleted)!.content).toBe('a\n\nb\n');
+  });
   it('scrubs ZCode nested event configs while preserving user hooks and root settings', () => {
     const input = { theme: 'user', hooks: { enabled: true, events: { SessionStart: [{ hooks: [{ command: 'python .zcode/hooks/session-start.py' }, { command: 'node user.js' }] }] } } };
     const paths = ['.zcode/hooks/session-start.py'];
