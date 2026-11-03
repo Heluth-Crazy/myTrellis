@@ -4,7 +4,9 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
+import { buildMigrationPlan, executeMigration, restoreMigration, type MigrationPlan } from '../src/migrate.js';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const binary = path.join(repository, 'bin', 'trellis.js');
@@ -90,9 +92,16 @@ function snapshot(root: string, relative = ''): Map<string, Buffer> {
 }
 
 function expectSnapshot(root: string, expected: Map<string, Buffer>): void {
-  const actual = snapshot(root);
+  expectBytes(snapshot(root), expected);
+}
+
+function expectBytes(actual: Map<string, Buffer>, expected: Map<string, Buffer>): void {
   expect([...actual.keys()].sort()).toEqual([...expected.keys()].sort());
-  for (const [relative, bytes] of expected) expect(actual.get(relative), relative).toEqual(bytes);
+  for (const [relative, bytes] of expected) expect(actual.get(relative)?.equals(bytes), relative).toBe(true);
+}
+
+function snapshotHashes(root: string): Map<string, string> {
+  return new Map([...snapshot(root)].map(([relative, bytes]) => [relative, createHash('sha256').update(bytes).digest('hex')]));
 }
 
 function expectNoLegacyReferences(root: string): void {
@@ -126,7 +135,14 @@ function normalizedHash(bytes: Buffer): string {
 
 function expectedPlatforms(original: Map<string, Buffer>): string[] {
   const folders: Record<string, string> = { claude: '.claude', codex: '.codex', kimi: '.kimi-code', pi: '.pi', opencode: '.opencode' };
-  return Object.entries(folders).filter(([, folder]) => [...original.keys()].some(relative => relative.startsWith(`${folder}/`) && catalog.paths[relative]?.includes(normalizedHash(original.get(relative)!)))).map(([platform]) => platform);
+  const detected = new Set(Object.entries(folders)
+    .filter(([, folder]) => [...original.keys()].some(relative => relative === folder || relative.startsWith(`${folder}/`)))
+    .map(([platform]) => platform));
+  if (original.has('CLAUDE.md')) detected.add('claude');
+  const agentsSignal = /<!-- TRELLIS:START -->[\s\S]*<!-- TRELLIS:END -->/.test(original.get('AGENTS.md')?.toString() ?? '')
+    || [...original.keys()].some(relative => /^\.agents\/skills\/trellis-[^/]+\/SKILL\.md$/.test(relative));
+  if (agentsSignal && !['codex', 'kimi', 'pi', 'opencode'].some(platform => detected.has(platform))) detected.add('codex');
+  return Object.keys(folders).filter(platform => detected.has(platform));
 }
 
 function expectNoOriginalCatalogFile(root: string, original: Map<string, Buffer>): void {
@@ -135,6 +151,72 @@ function expectNoOriginalCatalogFile(root: string, original: Map<string, Buffer>
     if (/^\.trellis\/(?:spec|tasks|workspace)\//.test(relative)) continue;
     if (!catalog.paths[relative]?.includes(normalizedHash(bytes))) continue;
     expect(after.get(relative)?.equals(bytes), `legacy catalog file survived unchanged: ${relative}`).not.toBe(true);
+  }
+}
+
+function virtualFiles(original: Map<string, Buffer>, plan: MigrationPlan): Map<string, Buffer> {
+  const result = new Map(original);
+  for (const change of plan.changes) {
+    if (change.after === undefined) result.delete(change.relative);
+    else result.set(change.relative, Buffer.from(change.after, 'base64'));
+  }
+  return result;
+}
+
+function expectVirtualPlan(root: string, original: Map<string, Buffer>, plan: MigrationPlan, expected: string[]): void {
+  const final = virtualFiles(original, plan);
+  const manifest = JSON.parse(final.get('.trellis/manifest.json')?.toString() ?? '') as { platforms: string[] };
+  expect(manifest.platforms).toEqual(expected);
+  for (const [relative, bytes] of protectedSnapshot(root)) expect(final.get(relative)?.equals(bytes), relative).toBe(true);
+  for (const [relative, bytes] of original) {
+    if (/^\.trellis\/(?:spec|tasks|workspace)\//.test(relative)) continue;
+    if (!catalog.paths[relative]?.includes(normalizedHash(bytes))) continue;
+    expect(final.get(relative)?.equals(bytes), `legacy catalog file survived unchanged: ${relative}`).not.toBe(true);
+  }
+  for (const [relative, bytes] of final) {
+    if (!allPlatformFolders.includes(relative.split('/')[0]!) && relative !== 'AGENTS.md' && relative !== 'CLAUDE.md') continue;
+    expect(bytes.toString(), relative).not.toMatch(/\.trellis\/scripts|\btask\.py\b|\badd_session\.py\b/);
+  }
+  for (const platform of expected) {
+    const target = platform === 'claude' ? '.claude' : '.agents';
+    for (const skill of ['trellis-plan', 'trellis-check', 'trellis-handoff', 'trellis-spec']) {
+      const installed = final.get(`${target}/skills/${skill}/SKILL.md`);
+      expect(installed?.toString(), `${target}/${skill}`).toBe(readFileSync(path.join(repository, 'templates', 'skills', skill, 'SKILL.md'), 'utf8'));
+    }
+  }
+}
+
+function virtualContent(plan: MigrationPlan, original: Map<string, Buffer>, relative: string): string | undefined {
+  const change = plan.changes.find(entry => entry.relative === relative);
+  if (change) return change.after === undefined ? undefined : Buffer.from(change.after, 'base64').toString();
+  return original.get(relative)?.toString();
+}
+
+// Planning walks are independent and read-only. Bound native workers to three
+// so the full cached-version matrix stays practical on Windows without losing
+// any path validation or whole-tree plan assertions.
+let planningWorkers = 0;
+const planningWaiters: Array<() => void> = [];
+async function cachedPlan(root: string): Promise<MigrationPlan> {
+  if (planningWorkers < 3) planningWorkers++;
+  else await new Promise<void>(resolve => planningWaiters.push(resolve));
+  try {
+    return await new Promise<MigrationPlan>((resolve, reject) => {
+      const worker = new Worker(new URL('./helpers/plan-worker.mjs', import.meta.url), {
+        workerData: { root, module: new URL('../dist/migrate.js', import.meta.url).href },
+      });
+      let result: MigrationPlan | undefined;
+      worker.once('message', plan => { result = plan as MigrationPlan; });
+      worker.once('error', reject);
+      worker.once('exit', code => {
+        if (code === 0 && result) resolve(result);
+        else reject(new Error(`Fixture planner exited with code ${code}`));
+      });
+    });
+  } finally {
+    const next = planningWaiters.shift();
+    if (next) next();
+    else planningWorkers--;
   }
 }
 
@@ -160,7 +242,7 @@ describe('trellis migrate handwritten fixtures', () => {
     expect(agents).toContain('User instructions.');
     expect(agents).toContain('Keep this line.');
     expect(agents).toContain('<!-- TRELLIS:START -->');
-    expect(protectedSnapshot(root)).toEqual(protectedBefore);
+    expectBytes(protectedSnapshot(root), protectedBefore);
     expect(existsSync(path.join(root, '.trellis', 'scripts'))).toBe(false);
     expect(existsSync(path.join(root, '.agents', 'skills', 'trellis-custom'))).toBe(false);
     expect(existsSync(path.join(root, '.github', 'copilot-instructions.md'))).toBe(false);
@@ -219,6 +301,31 @@ describe('trellis migrate handwritten fixtures', () => {
     expect(run(root, ['migrate', '--yes', '--backup-dir', backupDir()])).toMatch(/nothing to migrate/i);
     expectSnapshot(root, before);
   });
+
+  it('selects Codex when an AGENTS block is the only agents-target signal', () => {
+    const root = project();
+    write(root, '.trellis/scripts/task.py', 'legacy\n');
+    write(root, 'AGENTS.md', 'User instructions.\n<!-- TRELLIS:START -->\nlegacy\n<!-- TRELLIS:END -->\n');
+    const original = snapshot(root);
+    const plan = buildMigrationPlan(root);
+    expect(plan.platforms).toEqual(['codex']);
+    expect(virtualContent(plan, original, 'AGENTS.md')).toContain('<!-- TRELLIS:START -->');
+    expect(virtualContent(plan, original, '.agents/skills/trellis-plan/SKILL.md')).toBe(readFileSync(path.join(repository, 'templates', 'skills', 'trellis-plan', 'SKILL.md'), 'utf8'));
+  });
+
+  it('detects Claude and OpenCode while preserving their user skills', () => {
+    const root = project();
+    write(root, '.trellis/.version', '0.6.17\n');
+    write(root, 'CLAUDE.md', 'Project instructions.\n');
+    write(root, '.claude/skills/user-tool/SKILL.md', 'user Claude skill\n');
+    write(root, '.agents/skills/trellis-plan/SKILL.md', 'upstream Trellis skill\n');
+    write(root, '.opencode/package.json', JSON.stringify({ dependencies: { '@mindfoldhq/trellis': '0.6.17' } }));
+    const original = snapshot(root);
+    const plan = buildMigrationPlan(root);
+    expect(plan.platforms).toEqual(['claude', 'opencode']);
+    expect(virtualContent(plan, original, '.claude/skills/user-tool/SKILL.md')).toBe('user Claude skill\n');
+    expect(virtualContent(plan, original, '.agents/skills/trellis-plan/SKILL.md')).toBe(readFileSync(path.join(repository, 'templates', 'skills', 'trellis-plan', 'SKILL.md'), 'utf8'));
+  });
 });
 
 const cachedVersions = fixtureRoot && existsSync(fixtureRoot)
@@ -228,18 +335,18 @@ const cachedVersions = fixtureRoot && existsSync(fixtureRoot)
 if (!cachedVersions.length) console.info('Skipping cached upstream migration fixtures: set TL_FIXTURES to a cache containing fixtures/.');
 
 describe.skipIf(!cachedVersions.length)('trellis migrate cached upstream fixtures', () => {
-  it.each(cachedVersions)('migrates upstream %s, is idempotent, and restores it byte-for-byte', version => {
+  const roundTripVersions = ['0.3.10', '0.6.0-beta.23', '0.6.17'].filter(version => cachedVersions.includes(version));
+  const planOnlyVersions = cachedVersions.filter(version => !roundTripVersions.includes(version));
+
+  it.each(roundTripVersions)('migrates upstream %s, is idempotent, and restores it byte-for-byte', version => {
     const root = copyProject(path.join(fixtureRoot, version));
     const original = snapshot(root);
+    const originalHashes = new Map([...original].map(([relative, bytes]) => [relative, createHash('sha256').update(bytes).digest('hex')]));
     const expected = expectedPlatforms(original);
     const protectedBefore = protectedSnapshot(root);
     const backup = backupDir();
-    const dry = run(root, ['migrate', '--dry-run', '--backup-dir', backup]);
-    expectSnapshot(root, original);
-    const output = run(root, ['migrate', '--yes', '--backup-dir', backup]);
-    const saved = backupFrom(output);
-    expect(dry).toBe(withoutBackup(output));
-    expect(protectedSnapshot(root)).toEqual(protectedBefore);
+    const saved = executeMigration(buildMigrationPlan(root), backup);
+    expectBytes(protectedSnapshot(root), protectedBefore);
     const state = JSON.parse(readFileSync(path.join(root, '.trellis', 'manifest.json'), 'utf8')) as { platforms: string[] };
     expect(state.platforms).toEqual(expected);
     for (const platform of expected) {
@@ -255,10 +362,17 @@ describe.skipIf(!cachedVersions.length)('trellis migrate cached upstream fixture
       const full = path.join(root, folder);
       if (existsSync(full)) for (const [relative, bytes] of snapshot(full)) expect(bytes.toString(), `${folder}/${relative}`).not.toMatch(/\.trellis\/scripts|task\.py|add_session\.py/);
     }
-    expect(run(root, ['migrate', '--yes', '--backup-dir', backup])).toMatch(/nothing to migrate/i);
-    run(root, ['migrate', '--restore', saved]);
-    expectSnapshot(root, original);
+    expect(buildMigrationPlan(root).changes).toEqual([]);
+    restoreMigration(root, saved);
+    expect(snapshotHashes(root)).toEqual(originalHashes);
   }, 120_000);
+
+  it.concurrent.each(planOnlyVersions)('plans a complete migration for upstream %s', async version => {
+    const root = path.join(fixtureRoot, version);
+    const original = snapshot(root);
+    const expected = expectedPlatforms(original);
+    expectVirtualPlan(root, original, await cachedPlan(root), expected);
+  }, 90_000);
 });
 
 describe.skipIf(cachedVersions.length > 0)('trellis migrate cached upstream fixtures (set TL_FIXTURES to enable)', () => {

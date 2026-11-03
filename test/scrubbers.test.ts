@@ -52,6 +52,11 @@ describe('legacy structured scrubbers', () => {
     expect(JSON.parse(result!.content)).toEqual({ extensions: ['./mine.ts'], skills: ['./my-skills'], prompts: ['./my-prompts'], packages: ['npm:mine'] });
   });
 
+  it('keeps Pi enableSkillCommands when no Trellis extension was installed', () => {
+    const result = scrub('.pi/settings.json', { enableSkillCommands: true, extensions: ['./mine.ts'] });
+    expect(JSON.parse(result!.content)).toEqual({ enableSkillCommands: true, extensions: ['./mine.ts'] });
+  });
+
   it('recognizes every legacy structured registry path', () => {
     for (const path of [
       '.claude/settings.json', '.codex/hooks.json', '.gemini/settings.json', '.factory/settings.json', '.codebuddy/settings.json', '.qoder/settings.json', '.trae/hooks.json', '.iflow/settings.json',
@@ -62,6 +67,12 @@ describe('legacy structured scrubbers', () => {
   it('removes Codex-owned TOML and retains user settings', () => {
     const result = scrubStructured('.codex/config.toml', '# Project-scoped Codex defaults for Trellis workflows.\nproject_doc_fallback_filenames = ["AGENTS.md"]\n\n[agents]\nmax_depth = 1\nmodel = "fast"\n\n[ui]\ntheme = "dark"\n', deleted);
     expect(result).toEqual({ content: '[agents]\nmodel = "fast"\n\n[ui]\ntheme = "dark"\n', fullyEmpty: false });
+    expect(scrubStructured('.codex/config.toml', "  project_doc_fallback_filenames = [  'AGENTS.md' ]  \n", deleted)).toEqual({ content: '', fullyEmpty: true });
+  });
+
+  it('preserves custom Codex project instruction fallback lists', () => {
+    const custom = 'project_doc_fallback_filenames = ["AGENTS.md", "CLAUDE.md"]\n';
+    expect(scrubStructured('.codex/config.toml', custom, deleted)).toEqual({ content: custom, fullyEmpty: false });
   });
 
   it('returns malformed structured input intact and ignores unregistered paths', () => {

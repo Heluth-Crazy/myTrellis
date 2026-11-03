@@ -3,16 +3,17 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { blockContent, blockHash, blockRange, putBlock, stripBlock } from './blocks.js';
-import { hash, platforms, readManifest, type Manifest, type Platform } from './manifest.js';
+import { fileHash, hash, platforms, readManifest, type Manifest, type Platform } from './manifest.js';
 import { projectPath, normalizePath } from './project.js';
 import { template, version } from './templates.js';
-import { classify, platformFolders, protectedPath, type Catalog } from './legacy/classify.js';
+import { classify, generatedPath, platformFolders, protectedPath, type Catalog } from './legacy/classify.js';
 import { scrubStructured } from './legacy/scrubbers.js';
 
 export interface MigrationOptions { dryRun?: boolean; yes?: boolean; backupDir?: string; keepEdited?: boolean }
 interface Change { relative: string; before?: string; after?: string; group: 'removed' | 'scrubbed' | 'edited-and-removed' | 'created'; mode?: number }
 export interface MigrationPlan { root: string; changes: Change[]; directories: string[]; platforms: Platform[]; unsupported: string[]; kept: string[]; leftovers: string[] }
-interface BackupPlan { format: 1; root: string; changes: Change[]; directories: string[]; hashes: Record<string, string>; createdDirectories: string[] }
+interface StoredChange { relative: string; beforeHash?: string; afterHash?: string; group: Change['group']; mode?: number }
+interface BackupPlan { format: 2; root: string; changes: StoredChange[]; directories: string[]; createdDirectories: string[]; kept: string[]; unsupported: string[]; leftovers: string[] }
 const skills = ['trellis-plan', 'trellis-check', 'trellis-handoff', 'trellis-spec'];
 
 function present(file: string): boolean {
@@ -42,7 +43,7 @@ function walk(root: string, relative: string, files: Map<string, Buffer>, direct
   directories.push(relative);
   for (const entry of readdirSync(file, { withFileTypes: true })) {
     const child = `${relative}/${entry.name}`;
-    if (entry.name === '.git') continue;
+    if (entry.name === '.git' && !generatedPath(child)) continue;
     // A retained OpenCode package owns its dependency tree. Inventory it only
     // after the package scrubber has established that the whole package goes.
     if (child === '.opencode/node_modules') continue;
@@ -103,21 +104,28 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
   const kept: string[] = [];
   const owned = new Set<string>();
   const litePaths = new Set(Object.keys(previous?.files ?? {}));
-  const upstreamEvidence = Object.keys(originals).length > 0 || ['.trellis/.version', '.trellis/scripts', '.trellis/workflow.md'].some(p => present(safe(root, p)));
+  const upstreamEvidence = Object.keys(originals).length > 0 || ['.trellis/.version', '.trellis/scripts', '.trellis/workflow.md'].some(p => present(safe(root, p)))
+    || directories.some(p => /^\.trellis\/(?:\.runtime|\.backup-[^/]+)(?:\/|$)/.test(p));
   const put = (relative: string, bytes: Buffer | undefined, group: Change['group']): void => {
     safe(root, relative);
     const before = files.get(relative);
-    if ((before === undefined && bytes === undefined) || (before && bytes && before.equals(bytes))) { changes.delete(relative); return; }
+    if ((before === undefined && bytes === undefined) || (before && bytes && (before.equals(bytes) || (litePaths.has(relative) && fileHash(before) === fileHash(bytes))))) { changes.delete(relative); return; }
     changes.set(relative, { relative, before: before?.toString('base64'), after: bytes?.toString('base64'), group: before ? (editedRemoved.has(relative) ? 'edited-and-removed' : group) : 'created', mode: before ? lstatSync(safe(root, relative)).mode : undefined });
   };
   const candidates = [...new Set([...Object.keys(originals), ...Object.keys(catalog.paths)])];
   for (const [relative, bytes] of files) {
+    if (previous?.files[relative] && fileHash(bytes) === previous.files[relative]) continue;
     if (litePaths.has(relative) && !upstreamEvidence) continue;
     if (previous?.blocks[relative] && !upstreamEvidence) continue;
     if (relative === '.trellis/manifest.json') continue;
     const classification = classify(relative, bytes, originals, catalog);
     const seed = /^\.trellis\/tasks\/.+\/(?:implement|check)\.jsonl$/.test(relative);
     if (protectedPath(relative) && !seed) continue;
+    if (generatedPath(relative)) {
+      owned.add(relative);
+      put(relative, undefined, 'removed');
+      continue;
+    }
     if (options.keepEdited && classification.source !== 'unknown' && classification.edited && !seed && !/^\.opencode\/(?:node_modules\/|(?:package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml)$)/.test(relative)) {
       owned.add(relative);
       kept.push(relative);
@@ -158,10 +166,14 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
     }
   }
   const mapping: Record<Platform, string> = { claude: '.claude', codex: '.codex', kimi: '.kimi-code', pi: '.pi', opencode: '.opencode' };
-  const selected = platforms.filter(p => [...owned].some(relative => relative.startsWith(`${mapping[p]}/`)));
+  const selected = platforms.filter(p => previous?.platforms.includes(p) || present(safe(root, mapping[p])) || [...owned].some(relative => relative.startsWith(`${mapping[p]}/`)));
+  if (files.has('CLAUDE.md') && !selected.includes('claude')) selected.push('claude');
+  const agentsSignal = Boolean(blockRange(files.get('AGENTS.md')?.toString() ?? '')) || [...files.keys()].some(p => /^\.agents\/skills\/trellis-/.test(p) && !litePaths.has(p));
+  if (agentsSignal && !selected.some(p => p !== 'claude')) selected.push('codex');
   const unsupported = [...new Set([...owned].map(p => p.split('/')[0]!).filter(p => platformFolders.includes(p) && p !== '.agents' && !Object.values(mapping).includes(p)))].sort();
   if (previous && !upstreamEvidence && !changes.size) return { root, changes: [], directories, platforms: previous.platforms, unsupported: [], kept, leftovers: [] };
-  if (!owned.size && !changes.size) return { root, changes: [], directories, platforms: [], unsupported, kept, leftovers: [] };
+  if (!owned.size && !changes.size && !upstreamEvidence) return { root, changes: [], directories, platforms: [], unsupported, kept, leftovers: [] };
+  if (!selected.length) selected.push('codex');
   const selectedPlatforms = platforms.filter(p => selected.includes(p) || previous?.platforms.includes(p));
   const manifest: Manifest = { tool: 'trellis-lite', version, platforms: selectedPlatforms, files: {}, blocks: {} };
   const currentText = (relative: string): string => {
@@ -177,7 +189,7 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
       // Preserve unrelated files occupying a Lite destination.
       if (files.has(relative) && !owned.has(relative) && !previous?.files[relative]) { kept.push(relative); continue; }
       put(relative, Buffer.from(content), 'scrubbed');
-      manifest.files[relative] = hash(content);
+      manifest.files[relative] = fileHash(content);
     }
     const relative = target === 'agents' || /^@AGENTS\.md\r?$/m.test(currentText('CLAUDE.md')) ? 'AGENTS.md' : 'CLAUDE.md';
     if (kept.includes(relative)) continue;
@@ -208,12 +220,20 @@ export function migrationReport(plan: MigrationPlan): string[] {
     const counts = new Map<string, number>();
     for (const relative of entries) { const folder = relative.includes('/') ? relative.split('/')[0]! : '(root)'; counts.set(folder, (counts.get(folder) ?? 0) + 1); }
     lines.push(`${group}: ${entries.length}${entries.length ? ` (${[...counts].map(([p, n]) => `${p}: ${n}`).join(', ')})` : ''}`);
-    if (group === 'edited-and-removed' || group === 'kept') lines.push(...entries.map(p => `  ${p}`));
+    if (group === 'edited-and-removed' || group === 'kept') lines.push(...reportPaths(entries));
   }
   if (plan.changes.some(c => c.group === 'edited-and-removed')) lines.push('You had edited these; copies are in the backup.');
-  for (const folder of plan.unsupported) lines.push(`${folder}: removed, not supported by Trellis Lite`);
-  lines.push(`Leftover references: ${plan.leftovers.length}`, ...plan.leftovers.map(p => `  ${p}`));
+  for (const folder of plan.unsupported.slice(0, 10)) lines.push(`${folder}: removed, not supported by Trellis Lite`);
+  if (plan.unsupported.length > 10) lines.push(reportOverflow(plan.unsupported.length - 10));
+  lines.push(`Leftover references: ${plan.leftovers.length}`, ...reportPaths(plan.leftovers));
   return lines;
+}
+
+function reportOverflow(count: number): string {
+  return `  ... and ${count} more (full list in the backup's plan.json)`;
+}
+function reportPaths(paths: string[]): string[] {
+  return [...paths.slice(0, 10).map(p => `  ${p}`), ...(paths.length > 10 ? [reportOverflow(paths.length - 10)] : [])];
 }
 
 function atomicWrite(file: string, bytes: Buffer | string): void {
@@ -254,14 +274,17 @@ export function executeMigration(plan: MigrationPlan, backupDir?: string): strin
       relative = path.posix.dirname(relative);
     }
   }
-  const hashes: Record<string, string> = {};
   for (const change of plan.changes) {
     if (change.before === undefined) continue;
     const original = Buffer.from(change.before, 'base64');
     atomicWrite(path.join(backup, 'files', change.relative), original);
-    hashes[change.relative] = hash(original);
   }
-  const record: BackupPlan = { format: 1, root: plan.root, changes: plan.changes, directories: plan.directories, hashes, createdDirectories: [...createdDirectories] };
+  const storedChanges: StoredChange[] = plan.changes.map(change => ({
+    relative: change.relative, group: change.group, mode: change.mode,
+    beforeHash: change.before === undefined ? undefined : hash(Buffer.from(change.before, 'base64')),
+    afterHash: change.after === undefined ? undefined : hash(Buffer.from(change.after, 'base64')),
+  }));
+  const record: BackupPlan = { format: 2, root: plan.root, changes: storedChanges, directories: plan.directories, createdDirectories: [...createdDirectories], kept: plan.kept, unsupported: plan.unsupported, leftovers: plan.leftovers };
   atomicWrite(path.join(backup, 'plan.json'), JSON.stringify(record, null, 2) + '\n');
   // The complete backup is durable before the first project mutation.
   for (const change of plan.changes) {
@@ -280,25 +303,26 @@ export function restoreMigration(root: string, requested: string): string[] {
   root = realpathSync(root);
   const backup = externalBackup(root, requested);
   const record = JSON.parse(readFileSync(path.join(backup, 'plan.json'), 'utf8')) as BackupPlan;
-  if (record.format !== 1 || record.root !== root || !Array.isArray(record.changes) || !Array.isArray(record.directories) || !Array.isArray(record.createdDirectories)) throw new Error('Invalid backup or backup belongs to a different project');
+  if (record.format !== 2 || record.root !== root || !Array.isArray(record.changes) || !Array.isArray(record.directories) || !Array.isArray(record.createdDirectories)) throw new Error('Invalid backup or backup belongs to a different project');
   // Validate the entire record and original hashes before touching the project.
   const originals = new Map<string, Buffer>();
   for (const change of record.changes) {
     safe(root, change.relative);
     const file = safe(root, change.relative);
     if (present(file) && !lstatSync(file).isFile()) throw new Error(`Restore destination is not a file: ${change.relative}`);
-    if (change.before !== undefined) {
+    for (const digest of [change.beforeHash, change.afterHash]) if (digest !== undefined && !/^[a-f0-9]{64}$/.test(digest)) throw new Error(`Invalid backup hash: ${change.relative}`);
+    if (change.beforeHash !== undefined) {
       const bytes = readFileSync(safe(path.join(backup, 'files'), change.relative));
-      if (hash(bytes) !== record.hashes[change.relative]) throw new Error(`Backup hash mismatch: ${change.relative}`);
+      if (hash(bytes) !== change.beforeHash) throw new Error(`Backup hash mismatch: ${change.relative}`);
       originals.set(change.relative, bytes);
     }
-    const current = present(file) ? readFileSync(file).toString('base64') : undefined;
-    if (current !== change.after && current !== change.before) throw new Error(`Restore would overwrite a later edit: ${change.relative}`);
+    const current = present(file) ? hash(readFileSync(file)) : undefined;
+    if (current !== change.afterHash && current !== change.beforeHash) throw new Error(`Restore would overwrite a later edit: ${change.relative}`);
   }
   for (const directory of [...record.directories, ...record.createdDirectories]) safe(root, directory);
   for (const change of record.changes) {
     const file = safe(root, change.relative);
-    if (change.before === undefined) rmSync(file, { force: true });
+    if (change.beforeHash === undefined) rmSync(file, { force: true });
     else { atomicWrite(file, originals.get(change.relative)!); if (change.mode !== undefined) chmodSync(file, change.mode); }
   }
   for (const relative of [...record.createdDirectories].sort((a, b) => b.length - a.length)) {

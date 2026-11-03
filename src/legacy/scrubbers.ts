@@ -160,8 +160,11 @@ function scrubOpencode(content: string): StructuredScrubResult {
 function scrubPi(content: string): StructuredScrubResult {
   const root = parseObject(content);
   if (!root) return { content, fullyEmpty: false };
-  let changed = "enableSkillCommands" in root;
-  delete root.enableSkillCommands;
+  const hasTrellisExtension = Array.isArray(root.extensions) && root.extensions.some(
+    (value) => typeof value === "string" && value.replace(/^\.\//, "") === "extensions/trellis/index.ts",
+  );
+  let changed = hasTrellisExtension && "enableSkillCommands" in root;
+  if (hasTrellisExtension) delete root.enableSkillCommands;
   for (const [key, owned] of [["extensions", "./extensions/trellis/index.ts"], ["skills", "./skills"], ["prompts", "./prompts"]] as const) {
     if (!Array.isArray(root[key])) continue;
     const normalizedOwned = owned.replace(/^\.\//, "");
@@ -180,7 +183,7 @@ function scrubPi(content: string): StructuredScrubResult {
 function scrubCodexToml(content: string): StructuredScrubResult {
   let changed = false;
   const lines = content.split(/\r?\n/).filter((line) => {
-    if (/^\s*project_doc_fallback_filenames\s*=/.test(line)) { changed = true; return false; }
+    if (/^\s*project_doc_fallback_filenames\s*=\s*\[\s*(?:"AGENTS\.md"|'AGENTS\.md')\s*\]\s*(?:#.*)?$/.test(line)) { changed = true; return false; }
     const comment = line.trim().match(/^#\s?(.*)$/)?.[1]?.trim();
     const keep = comment === undefined || (comment.length > 0 && !TOML_COMMENTS.has(comment));
     if (!keep) changed = true;

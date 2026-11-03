@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { blockContent, blockHash, blockRange, putBlock, stripBlock } from './blocks.js';
-import { hash, platforms, readManifest, type Manifest, type Platform } from './manifest.js';
+import { fileHash, platforms, readManifest, type Manifest, type Platform } from './manifest.js';
 import { projectPath } from './project.js';
 import { template, version } from './templates.js';
 
@@ -56,13 +56,13 @@ function sync(root: string, selected: Platform[], previous: Manifest | undefined
     const file = projectPath(root, relative);
     const exists = existsSync(file);
     const oldHash = previous?.files[relative];
-    if (exists && hash(readFileSync(file)) === hash(content)) { next.files[relative] = hash(content); continue; }
-    if (exists && !options.force && (!oldHash || hash(readFileSync(file)) !== oldHash)) {
+    if (exists && fileHash(readFileSync(file)) === fileHash(content)) { next.files[relative] = fileHash(content); continue; }
+    if (exists && !options.force && (!oldHash || fileHash(readFileSync(file)) !== oldHash)) {
       messages.push(`Kept ${oldHash ? 'edited' : 'unmanaged'} file: ${relative}`);
       continue;
     }
     operations.push({ relative, content });
-    next.files[relative] = hash(content);
+    next.files[relative] = fileHash(content);
     messages.push(`Wrote ${relative}`);
   }
   for (const [relative, content] of Object.entries(current.blocks)) {
@@ -81,7 +81,7 @@ function sync(root: string, selected: Platform[], previous: Manifest | undefined
   for (const [relative, digest] of Object.entries(previous?.files ?? {})) {
     if (relative in current.files) continue;
     const file = projectPath(root, relative);
-    if (existsSync(file) && hash(readFileSync(file)) !== digest && !options.force) {
+    if (existsSync(file) && fileHash(readFileSync(file)) !== digest && !options.force) {
       messages.push(`Kept edited obsolete file: ${relative}`);
       continue;
     }
@@ -144,7 +144,7 @@ export function uninstall(root: string, options: { force?: boolean; purge?: bool
   const messages: string[] = [];
   for (const [relative, digest] of Object.entries(previous.files)) {
     const file = projectPath(root, relative);
-    if (existsSync(file) && hash(readFileSync(file)) !== digest && !options.force) {
+    if (existsSync(file) && fileHash(readFileSync(file)) !== digest && !options.force) {
       messages.push(`Kept edited file: ${relative}`);
     } else { operations.push({ relative }); messages.push(`Removed ${relative}`); }
   }

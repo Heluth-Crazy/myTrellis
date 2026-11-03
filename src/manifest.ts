@@ -16,6 +16,11 @@ export function hash(bytes: string | Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/** Hash managed text files independent of Git's checkout line endings. */
+export function fileHash(bytes: string | Buffer): string {
+  return hash((typeof bytes === 'string' ? bytes : bytes.toString('utf8')).replace(/\r\n/g, '\n'));
+}
+
 export function readManifest(root: string): Manifest | undefined {
   const file = projectPath(root, '.trellis/manifest.json');
   if (!existsSync(file)) return undefined;
