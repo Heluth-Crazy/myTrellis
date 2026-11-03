@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [
+      {"command": "python .codex/hooks/inject-workflow-state.py"},
+      {"command": "echo user-hook"}
+    ]}]
+  }
+}

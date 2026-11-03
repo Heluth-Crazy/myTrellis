@@ -1,0 +1,9 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [
+      {"command": "python .claude/hooks/session-start.py"},
+      {"command": "echo user-hook"}
+    ]}]
+  },
+  "env": {"USER_SETTING": "keep"}
+}

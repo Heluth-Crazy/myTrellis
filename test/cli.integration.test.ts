@@ -289,7 +289,7 @@ describe('trellis CLI integration', () => {
     expect(run(root, ['task', 'archive', name], true)).toContain(`Archived task already exists: ${name}`);
   });
 
-  it('resolves the repository from a nested directory and reports help, errors, version, and migration stub', () => {
+  it('resolves the repository from a nested directory and reports help, errors, version, and empty migration', () => {
     const root = project();
     mkdirSync(path.join(root, 'nested', 'deep'), { recursive: true });
     run(path.join(root, 'nested', 'deep'), ['init', '--codex']);
@@ -297,7 +297,7 @@ describe('trellis CLI integration', () => {
     expect(run(root, ['--help'])).toContain('Usage: trellis');
     expect(run(root, ['init', '--help'])).toContain('Usage: trellis init');
     expect(run(root, ['--version']).trim()).toBe('1.0.0-alpha.0');
-    expect(run(root, ['migrate']).trim()).toBe('not implemented yet');
+    expect(run(root, ['migrate']).trim()).toBe('Nothing to migrate.');
     expect(run(root, ['unknown'], true)).toContain('Error: Unknown command: unknown');
   });
 
