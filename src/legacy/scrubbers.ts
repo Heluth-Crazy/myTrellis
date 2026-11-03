@@ -138,7 +138,8 @@ function scrubHooks(content: string, deletedPaths: readonly string[], mode: Hook
   }
   if (Object.keys(root.hooks).length === 0) {
     delete root.hooks;
-    if (dropVersionWhenEmpty && root.version === 1) delete root.version;
+    // Hook files whose only other key is the schema version were written whole by Trellis.
+    if (root.version === 1 && (dropVersionWhenEmpty || (mode === "flat" && Object.keys(root).length === 1))) delete root.version;
   }
   return jsonResult(root, content, changed);
 }

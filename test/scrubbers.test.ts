@@ -41,6 +41,12 @@ describe('legacy structured scrubbers', () => {
     expect(scrub('.github/hooks/trellis.json', { version: 1, hooks: { start: [{ command: 'python .trellis/scripts/task.py' }] } })).toEqual({ content: '{}\n', fullyEmpty: true });
   });
 
+  it('drops a flat hook file left with only its schema version, but keeps the version beside user keys', () => {
+    const trellis = { start: [{ command: 'python .trellis/scripts/task.py' }] };
+    expect(scrub('.cursor/hooks.json', { version: 1, hooks: trellis })).toEqual({ content: '{}\n', fullyEmpty: true });
+    expect(JSON.parse(scrub('.cursor/hooks.json', { version: 1, user: true, hooks: trellis })!.content)).toEqual({ version: 1, user: true });
+  });
+
   it('removes only the upstream OpenCode dependency', () => {
     const result = scrub('.opencode/package.json', { name: 'mine', dependencies: { '@opencode-ai/plugin': '^1', vitest: '^4' } });
     expect(JSON.parse(result!.content)).toEqual({ name: 'mine', dependencies: { vitest: '^4' } });
