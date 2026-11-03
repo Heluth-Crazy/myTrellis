@@ -16,6 +16,14 @@ interface StoredChange { relative: string; beforeHash?: string; afterHash?: stri
 interface BackupPlan { format: 2; root: string; changes: StoredChange[]; directories: string[]; createdDirectories: string[]; kept: string[]; unsupported: string[]; leftovers: string[] }
 const skills = ['trellis-plan', 'trellis-check', 'trellis-handoff', 'trellis-spec'];
 
+/** An orphan lockfile whose only root dependency is the upstream OpenCode plugin. */
+function pluginOnlyLock(bytes: Buffer | undefined): boolean {
+  try {
+    const dependencies = Object.keys(JSON.parse(bytes!.toString()).packages[''].dependencies ?? {});
+    return dependencies.length === 1 && dependencies[0] === '@opencode-ai/plugin';
+  } catch { return false; }
+}
+
 function present(file: string): boolean {
   try { lstatSync(file); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
 }
@@ -158,7 +166,7 @@ export function buildMigrationPlan(root: string, options: MigrationOptions = {})
     put(relative, undefined, classification.edited && !seed ? 'edited-and-removed' : 'removed');
   }
   const packageChange = changes.get('.opencode/package.json');
-  if (packageChange && packageChange.after === undefined) {
+  if ((packageChange && packageChange.after === undefined) || (!files.has('.opencode/package.json') && pluginOnlyLock(files.get('.opencode/package-lock.json')))) {
     walk(root, '.opencode/node_modules', files, directories, false, links);
     for (const relative of links) if (relative.startsWith('.opencode/node_modules/')) safe(root, relative);
     for (const [relative] of files) {

@@ -162,3 +162,12 @@ it('keeps unchanged CRLF Lite files intact both alone and alongside upstream rem
   const plan = buildMigrationPlan(root);
   for (const relative of Object.keys(manifest.files)) expect(plan.changes.some(c => c.relative === relative)).toBe(false);
 });
+it('removes an orphan OpenCode lockfile that only locks the upstream plugin', () => {
+  const { root } = fixture();
+  mkdirSync(path.join(root, '.opencode'));
+  const lock = (dependencies: Record<string, string>) => JSON.stringify({ name: '.opencode', lockfileVersion: 3, packages: { '': { dependencies } } });
+  writeFileSync(path.join(root, '.opencode', 'package-lock.json'), lock({ '@opencode-ai/plugin': '1.14.22' }));
+  expect(buildMigrationPlan(root).changes.find(c => c.relative === '.opencode/package-lock.json')).toMatchObject({ group: 'removed' });
+  writeFileSync(path.join(root, '.opencode', 'package-lock.json'), lock({ '@opencode-ai/plugin': '1.14.22', 'user-dep': '1.0.0' }));
+  expect(buildMigrationPlan(root).changes.some(c => c.relative === '.opencode/package-lock.json')).toBe(false);
+});
