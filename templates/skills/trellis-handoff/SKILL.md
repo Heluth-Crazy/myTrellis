@@ -12,8 +12,9 @@ The reader shares none of your context. Write `brief-<name>.md` in the task fold
 - **What's known**: findings, decisions already made, and approaches that were tried and failed, with the
   reason.
 - **Constraints**: what not to touch, safety rules (no destructive git commands, no killing processes by
-  name), and a time budget.
-- **How to verify**: the exact commands.
+  name), and a time budget. Leave the task folder writable: the worker records its results there.
+- **How to verify**: the exact commands. Ask the worker to record what it checked in `validation.md` in
+  the task folder.
 - **What to report back**: for example the changed files, check results and open questions, in a few lines.
   Long output goes to a file in the task folder.
 
