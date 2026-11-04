@@ -285,6 +285,46 @@ describe('trellis CLI integration', () => {
     expect(readFileSync(path.join(root, '.trellis', 'tasks', first, 'prd.md'), 'utf8').startsWith('# First title\n')).toBe(true);
   });
 
+  it.each([false, true])('dates tasks by remaining files and sorts nested edits first (archived: %s)', archived => {
+    const root = project();
+    const tasks = archived ? '.trellis/tasks/archive/2020-01' : '.trellis/tasks';
+    const older = tasks + '/01-01-older';
+    const newer = tasks + '/01-02-newer';
+    write(root, older + '/prd.md', '# Older task\n');
+    write(root, older + '/implement.jsonl', 'seed\n');
+    write(root, newer + '/prd.md', '# Newer task\n');
+    const setDate = (relative: string, day: number): void => {
+      const date = new Date(2020, 0, day, 12);
+      utimesSync(path.join(root, relative), date, date);
+    };
+    setDate(older + '/prd.md', 1);
+    setDate(older + '/implement.jsonl', 3);
+    setDate(newer + '/prd.md', 2);
+    rmSync(path.join(root, older, 'implement.jsonl'));
+    const args = archived ? ['task', 'list', '--all'] : ['task', 'list'];
+    const listing = run(root, args).trim().split('\n');
+    expect(listing[0]).toContain('01-02-newer  Newer task  2020-01-02');
+    expect(listing[1]).toContain('01-01-older  Older task  2020-01-01');
+
+    write(root, older + '/notes/deep/findings.md', 'Initial notes\n');
+    setDate(older + '/notes/deep/findings.md', 1);
+    expect(run(root, args).trim().split('\n')[0]).toContain('01-02-newer');
+    write(root, older + '/notes/deep/findings.md', 'Edited notes\n');
+    setDate(older + '/notes/deep/findings.md', 4);
+    const edited = run(root, args).trim().split('\n');
+    expect(edited[0]).toContain('01-01-older  Older task  2020-01-04');
+    expect(edited[1]).toContain('01-02-newer  Newer task  2020-01-02');
+  });
+
+  it('uses the task folder date when it contains only empty directories', () => {
+    const root = project();
+    const task = '.trellis/tasks/01-01-empty';
+    mkdirSync(path.join(root, task, 'notes'), { recursive: true });
+    const date = new Date(2020, 0, 1, 12);
+    utimesSync(path.join(root, task), date, date);
+    expect(run(root, ['task', 'list'])).toContain('01-01-empty  empty  2020-01-01');
+  });
+
   it('archives unique task suffixes, lists archives with --all, and rejects ambiguous suffixes', () => {
     const root = project();
     const one = taskName(run(root, ['task', 'new', 'same']));

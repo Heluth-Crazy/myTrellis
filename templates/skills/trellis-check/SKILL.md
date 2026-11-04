@@ -13,7 +13,8 @@ description: Verify work before calling it done by checking the change against t
 3. Run the checks the project defines (AGENTS.md or CLAUDE.md, package scripts, CI config): lint, type check,
    and the tests that cover the change. Run them yourself. Don't rely on earlier reports, including your own.
 4. Fix failures and run the checks again. If something can't be fixed within the task, say so plainly.
-5. Write or update `validation.md` in the task folder:
+5. If there is a task folder, write or update `validation.md` in it (with no task, skip this step; don't
+   create a folder just for it):
    - each check and its result;
    - how each acceptance criterion was verified;
    - anything not verified, and why.

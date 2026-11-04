@@ -56,8 +56,7 @@ function activeTasks(root: string): TaskEntry[] {
     .filter(entry => entry.isDirectory() && entry.name !== 'archive')
     .map(entry => {
       const task = path.join(directory, entry.name);
-      const info = statSync(task);
-      return { name: entry.name, directory: task, modified: info.mtime, bytes: directorySize(task) };
+      return taskEntry(entry.name, task);
     });
 }
 
@@ -71,21 +70,36 @@ function archivedTasks(root: string): TaskEntry[] {
     for (const entry of readdirSync(monthDirectory, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const task = path.join(monthDirectory, entry.name);
-      const info = statSync(task);
-      result.push({ name: entry.name, directory: task, modified: info.mtime, bytes: directorySize(task) });
+      result.push(taskEntry(entry.name, task));
     }
   }
   return result;
 }
 
-function directorySize(directory: string): number {
+function taskEntry(name: string, directory: string): TaskEntry {
+  const { bytes, newestFileMtime } = directoryStats(directory);
+  const modified = newestFileMtime === null ? statSync(directory).mtime : new Date(newestFileMtime);
+  return { name, directory, modified, bytes };
+}
+
+function directoryStats(directory: string): { bytes: number; newestFileMtime: number | null } {
   let bytes = 0;
+  let newestFileMtime: number | null = null;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const child = path.join(directory, entry.name);
-    if (entry.isDirectory()) bytes += directorySize(child);
-    else if (entry.isFile()) bytes += statSync(child).size;
+    if (entry.isDirectory()) {
+      const stats = directoryStats(child);
+      bytes += stats.bytes;
+      if (stats.newestFileMtime !== null) {
+        newestFileMtime = Math.max(newestFileMtime ?? -Infinity, stats.newestFileMtime);
+      }
+    } else if (entry.isFile()) {
+      const info = statSync(child);
+      bytes += info.size;
+      newestFileMtime = Math.max(newestFileMtime ?? -Infinity, info.mtimeMs);
+    }
   }
-  return bytes;
+  return { bytes, newestFileMtime };
 }
 
 function taskTitle(entry: TaskEntry): string {
@@ -149,7 +163,7 @@ export function taskList(root: string, all = false): string[] {
 function largestSubdirectories(directory: string): Array<{ name: string; bytes: number }> {
   return readdirSync(directory, { withFileTypes: true })
     .filter(entry => entry.isDirectory())
-    .map(entry => ({ name: entry.name, bytes: directorySize(path.join(directory, entry.name)) }))
+    .map(entry => ({ name: entry.name, bytes: directoryStats(path.join(directory, entry.name)).bytes }))
     .sort((a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name))
     .slice(0, 3);
 }
